@@ -1,8 +1,8 @@
-data_root=~/Data/new_extracted_nuscenes_val
+data_root=/scratch/shenzhen/Datasets/nuscenes_extracted_val
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-feature_root="${PROJECT_ROOT}/precomputed"
-occ3d_path=/media/fengyi/bb/Occ3D_nuscenes/gts/
-nucraft_path=/media/fengyi/bb/nuCraft/occupancy@0.2/
+feature_root=/scratch/shenzhen/precomputed
+occ3d_path=/scratch/shenzhen/Datasets/Occ3D_nuscenes/gts/
+nucraft_path=/scratch/shenzhen/Datasets/nuCraft/occupancy@0.2/
 scenes=(
     "scene-0003"
     # "scene-0012"

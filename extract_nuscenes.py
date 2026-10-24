@@ -6,7 +6,6 @@ from nuscenes.utils.splits import create_splits_scenes
 import json
 import multiprocessing
 import shutil
-import ipdb
 import os
 import numpy as np
 from nuscenes.nuscenes import LidarPointCloud
@@ -119,19 +118,26 @@ def thread_worker(scene, data_root, nusc, save_root):
     result = extract(scene, data_root=data_root, nusc=nusc, save_root=save_root)
     return scene['name'], result 
     
+_G = {}
+
+def _run_scene(scene):
+    return scene['name'], extract(scene, _G['data_root'], _G['nusc'], _G['save_root'])
+
 if __name__ == "__main__":
     split = 'val'
-    data_root = '/media/fengyi/bb/nuscenes'
-    save_root = f'/home/fengyi/Data/new_extracted_nuscenes_{split}'
+    data_root = '/scratch/shenzhen/Datasets/nuscenes'
+    save_root = f'/scratch/shenzhen/Datasets/nuscenes_extracted_{split}'
+    os.makedirs(save_root, exist_ok=True)
 
     scene_splits = create_splits_scenes()
     nusc = NuScenes(version='v1.0-trainval', dataroot=data_root, verbose=True)
     scene_list = [scene for scene in nusc.scene if scene['name'] in scene_splits[split]]
 
-    saved_mapping = {}
-
-    for scene in scene_list:
-        saved_mapping[scene['name']] = extract(scene, data_root=data_root, nusc=nusc, save_root=save_root)
+    num_workers = 32
+    _G.update(nusc=nusc, data_root=data_root, save_root=save_root)
+    ctx = multiprocessing.get_context('fork')  # children inherit nusc without re-loading
+    with ctx.Pool(num_workers) as pool:
+        saved_mapping = dict(pool.imap_unordered(_run_scene, scene_list))
 
     # max_threads = 8
     # futures = {}
