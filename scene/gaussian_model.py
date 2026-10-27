@@ -419,19 +419,32 @@ class GaussianModel:
         point_sem = detach_dict['_semantic']
         point_radius = self.scaling_activation(detach_dict['_scaling'])
         point_rotation = self.rotation_activation(detach_dict['_rotation'])
-        if min_bound is not None and max_bound is not None:
-            valid_mask = (point_xyz >= min_bound).all(1) & (point_xyz < max_bound).all(1)
-            point_xyz = point_xyz[valid_mask]
-            point_sem = point_sem[valid_mask]
-            point_radius = point_radius[valid_mask]
-            point_rotation = point_rotation[valid_mask]
-        
+        valid_mask = (point_xyz >= min_bound).all(1) & (point_xyz < max_bound).all(1)
+        point_xyz = point_xyz[valid_mask]
+        point_sem = point_sem[valid_mask]
+        point_radius = point_radius[valid_mask]
+        point_rotation = point_rotation[valid_mask]
+
         point_radius, point_offset = self.local_range_offset_full(point_radius, voxel_size)
+
+        # Accumulate into a dense voxel grid chunk by chunk (bounded memory), instead of
+        # collecting every expanded point and calling torch.unique on all of them.
+        idx_min = (min_bound / voxel_size).int()  # (1, 3)
+        dims = ((max_bound / voxel_size).int() - idx_min + 1).reshape(-1).long()  # +1: float-rounding margin
+        voxel_sem = torch.zeros((int(dims.prod()), point_sem.shape[1]), dtype=torch.float32, device=point_xyz.device)
+        occupied = torch.zeros(int(dims.prod()), dtype=torch.bool, device=point_xyz.device)
+
+        def accumulate(xyz, sem):
+            m = (xyz >= min_bound).all(1) & (xyz < max_bound).all(1)
+            xyz, sem = xyz[m], sem[m]
+            idx = (xyz / voxel_size).int() - idx_min
+            assert torch.all(idx >= 0)
+            key = (idx[:, 0].long() * dims[1] + idx[:, 1].long()) * dims[2] + idx[:, 2].long()
+            voxel_sem.index_add_(0, key, sem)
+            occupied[key] = True
 
         chunk_size = 5000
         if point_offset is not None:
-            xyz_ls = []
-            sem_ls = []
             for chunk in range(0, point_xyz.shape[0], chunk_size):
                 point_xyz_chunk = point_xyz[chunk:chunk+chunk_size]
                 point_sem_chunk = point_sem[chunk:chunk+chunk_size]
@@ -444,27 +457,17 @@ class GaussianModel:
                 valid_mask = spatial_weight > 0.6065 # exp(-1/2)=0.6065
 
                 new_point_sem = point_sem_chunk.unsqueeze(1).expand(-1, point_offset.shape[1], -1) # N, K, C
-                new_point_sem = new_point_sem * spatial_weight.unsqueeze(2) 
+                new_point_sem = new_point_sem * spatial_weight.unsqueeze(2)
 
-                xyz_ls.append(new_point_xyz[valid_mask])
-                sem_ls.append(new_point_sem[valid_mask])
-            
-            point_xyz = torch.cat(xyz_ls, dim=0)
-            point_sem = torch.cat(sem_ls, dim=0)
+                accumulate(new_point_xyz[valid_mask], new_point_sem[valid_mask])
+        else:
+            accumulate(point_xyz, point_sem)
 
-        if min_bound is not None and max_bound is not None:
-            valid_mask = (point_xyz >= min_bound).all(1) & (point_xyz < max_bound).all(1)
-            point_xyz = point_xyz[valid_mask]
-            point_sem = point_sem[valid_mask]
-
-        voxel_indices = (point_xyz / voxel_size).int()
-        unique, unique_inverse = torch.unique(voxel_indices, dim=0, return_inverse=True)
-        voxel_indices = unique - (min_bound/voxel_size).int()
-        assert torch.all(voxel_indices >= 0)
-
-        voxel_sem = torch.zeros((len(unique), point_sem.shape[1]), dtype=torch.float32, device=point_xyz.device)
-        voxel_sem.index_add_(0, unique_inverse, point_sem)
-        voxel_cls = torch.argmax(voxel_sem, dim=1)
+        # keys are x-major, so nonzero() order == torch.unique(dim=0) lexicographic order
+        keys = occupied.nonzero().squeeze(1)
+        stride_y = dims[1] * dims[2]
+        voxel_indices = torch.stack([keys // stride_y, (keys % stride_y) // dims[2], keys % dims[2]], dim=1).int()
+        voxel_cls = torch.argmax(voxel_sem[keys], dim=1)
 
         return voxel_indices, voxel_cls
 
