@@ -1,95 +1,184 @@
-import os
+"""Visualize TT-Occ occupancy predictions.
+
+pred: a .pth file, or a folder holding .pth files (a scene folder, its Occ/ folder,
+or a results root containing scene-*/Occ/).
+
+  python vis.py results-Occ3D/Camera_OpenSeeD_VGGT_RAFT/scene-0003            # interactive
+  python vis.py results-Occ3D/.../scene-0003/Occ/05.pth --save_dir out_vis    # save PNGs, no window
+  python vis.py <pred> --data_path <nuscenes> --gt_path <Occ3D gts>           # lidar frame + GT (key G)
+
+Keys (interactive): N next, B back, G toggle GT, S save PNG, Q quit.
+"""
 import json
-from os.path import join
-import ipdb
-from arguments import semantic_list
-import numpy as np
-from custom_utils import *
-import sys
-
-
+import os
 from argparse import ArgumentParser
-parser = ArgumentParser(description="Training script parameters")
-parser.add_argument('--data_path', type=str, default="/home/fengyi/Data/new_extracted_nuscenes_val")
+from pathlib import Path
 
-# /media/fengyi/bb/Occ3D_nuscenes/gts/
-# /media/fengyi/bb/nuCraft/occupancy@0.2/
-parser.add_argument('--gt_path', type=str, default='/media/fengyi/bb/Occ3D_nuscenes/gts/')
-parser.add_argument('--dataset', type=str, default='Occ3D')
+import numpy as np
+import open3d as o3d
+import torch
 
-# parser.add_argument('--gt_path', type=str, default='/media/fengyi/bb/Occ3D_nuscenes/gts/')
-# parser.add_argument('--dataset', type=str, default='Occ3D')
+COLORS = np.array([
+    [200, 200, 200], [255, 120, 50], [255, 192, 203], [255, 255, 0], [0, 150, 245],
+    [0, 255, 255], [255, 127, 0], [255, 0, 0], [255, 240, 150], [135, 60, 0],
+    [160, 32, 240], [255, 0, 255], [175, 0, 75], [75, 0, 75], [150, 240, 80],
+    [230, 230, 250], [0, 175, 0], [0, 0, 0],
+], dtype=np.uint8)  # same as arguments.colors
+colors_1 = COLORS / 255
+empty_id = 17
 
-args = parser.parse_args(sys.argv[1:])
-data_path = args.data_path
-gt_path = args.gt_path
-dataset = args.dataset
-
-mapping = json.load(open(f"{data_path}/mapping.json"))
-vis = VoxelGridVisualizer('Comparison', 1, 600, dataset)
-model_ls = [
-    # f'tp_selfocc/nucraft/selfocc_2',
-    # f'tp_selfocc/occ3d_all/selfocc',
-    'out-main-Occ3D/lidar-B',
-    
-]
-
-for scene in sorted(os.listdir(model_ls[0]))[0:]:
-    scene_dir = join(model_ls[0], scene)
-    if not os.path.isdir(scene_dir):
-        continue
-    occ_ls = sorted([file for file in os.listdir(join(scene_dir, 'Occ'))])
-    for occ_file in occ_ls:
-        print("visualizing", scene, 'for', occ_file)
-        time = occ_file.split('_')[-1].split('.')[0]
-        view_ls = []
-        for model in model_ls:
-            scene_dir = join(model, scene)
-            ckpt = torch.load(join(scene_dir, 'Occ', occ_file))
-        
-            timestep = int(occ_file.split('_')[-1].split('.')[0])
-            
-            
-            ego2world = np.loadtxt(join(data_path, scene, 'ego', f'{timestep:02d}.txt'))
-            lidar2world_ref = np.loadtxt(join(data_path, scene, 'lidar', f'{timestep:02d}.txt'))
-            ego2lidar = np.matmul(np.linalg.inv(lidar2world_ref), ego2world)
-
-            dense_cls_from_gs = transform_occ_from_ego_to_lidar(ckpt['voxel_indices'].cpu().numpy(), ckpt['voxel_cls'].cpu().numpy(), ego2lidar)
-            cnm_mask = dense_cls_from_gs == 255
-            dense_cls_from_gs[cnm_mask] = 17
-            ckpt['voxel_indices'], ckpt['voxel_cls'] = dense2sparse(dense_cls_from_gs)
-
-            
-            mask = ckpt['voxel_cls'] != 0
-            ckpt['voxel_indices'] = ckpt['voxel_indices'][mask]
-            ckpt['voxel_cls'] = ckpt['voxel_cls'][mask]
-
-            view_ls.append((ckpt['voxel_indices'], ckpt['voxel_cls']))
-            # view_ls.append((ckpt['voxel_indices'].cpu().numpy(), ckpt['voxel_cls'].cpu().numpy()))
-
-        if dataset == 'Occ3D':
-            dense_cls_occ_np, cnm_mask = load_occ3d_gt(
-                join(gt_path, scene, f"{mapping[scene]['sample_token'][f'{timestep:0>2d}']}/labels.npz"))
-            gt_file = dense2sparse(dense_cls_occ_np)
-            # view_ls[-1] = (view_ls[-1][0][mask], view_ls[-1][1][mask]) 
-            
-        else:
-            gt_file_path = os.path.join(gt_path, mapping[scene]['LIDAR_TOP'][time]+".bin") 
-            gt_file = load_nucraft_gt(gt_file_path)
-        view_ls.append(gt_file)
+PC_RANGE_EGO = np.array([-40.0, -40.0, -1.0, 40.0, 40.0, 5.4])
+PC_RANGE_LIDAR = np.array([-51.2, -51.2, -5.0, 51.2, 51.2, 3.0])
+VOXEL_SIZE = 0.2
 
 
-        ego_path = join(data_path, scene, 'ego', time+ '.txt')
-        ego2world = np.loadtxt(ego_path)
-        lidar_path = join(data_path, scene, 'lidar', time+'.txt') 
-        lidar2world = np.loadtxt(lidar_path)
-        world2lidar = np.linalg.inv(lidar2world)
-        ego2lidar = np.matmul(world2lidar, ego2world)
+def find_pred_files(pred):
+    p = Path(pred)
+    if p.is_file():
+        return [p]
+    for pattern in ("*.pth", "Occ/*.pth", "*/Occ/*.pth"):
+        files = sorted(p.glob(pattern))
+        if files:
+            return files
+    raise FileNotFoundError(f"no .pth files under {p}")
 
-        view_sparse_voxel(
-            view_ls,
-            vis,
-            f"vis/{scene}_{time}"
-        )
 
-print("done")
+def ego_to_lidar(voxel_indices, voxel_cls, ego2lidar):
+    pts = voxel_indices * VOXEL_SIZE + PC_RANGE_EGO[:3]
+    pts = (ego2lidar @ np.concatenate([pts, np.ones((len(pts), 1))], 1).T).T[:, :3]
+    keep = (pts >= PC_RANGE_LIDAR[:3]).all(1) & (pts < PC_RANGE_LIDAR[3:]).all(1)
+    idx = np.floor((pts[keep] - PC_RANGE_LIDAR[:3]) / VOXEL_SIZE).astype(int)
+    dims = np.round((PC_RANGE_LIDAR[3:] - PC_RANGE_LIDAR[:3]) / VOXEL_SIZE).astype(int)
+    dense = np.full(tuple(dims), empty_id, dtype=int)
+    dense[idx[:, 0], idx[:, 1], idx[:, 2]] = voxel_cls[keep]
+    return dense
+
+
+def dense_to_sparse(dense):
+    idx = np.stack(np.nonzero(dense != empty_id), axis=-1)
+    return idx, dense[idx[:, 0], idx[:, 1], idx[:, 2]]
+
+
+def drop_empty(idx, cls):
+    keep = (cls != 0) & (cls != empty_id)
+    return idx[keep], cls[keep]
+
+
+def to_voxel_grid(idx, cls):
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(idx + 0.5)
+    pcd.colors = o3d.utility.Vector3dVector(colors_1[cls])
+    return o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=1)
+
+
+def load_frame(path, args, mapping):
+    """Return (name, pred_grid, gt_grid or None)."""
+    ckpt = torch.load(path, map_location="cpu")
+    idx = ckpt["voxel_indices"].cpu().numpy()
+    cls = ckpt["voxel_cls"].cpu().numpy()
+    scene = path.parent.parent.name if path.parent.name == "Occ" else path.parent.name
+    step = int(path.stem.split("_")[-1])
+    name = f"{scene}_{step:02d}"
+    gt = None
+
+    if args.data_path:
+        ego2world = np.loadtxt(Path(args.data_path) / scene / "ego" / f"{step:02d}.txt")
+        lidar2world = np.loadtxt(Path(args.data_path) / scene / "lidar" / f"{step:02d}.txt")
+        ego2lidar = np.linalg.inv(lidar2world) @ ego2world
+        idx, cls = dense_to_sparse(ego_to_lidar(idx, cls, ego2lidar))
+        if args.gt_path:
+            token = mapping[scene]["sample_token"][f"{step:02d}"]
+            data = np.load(Path(args.gt_path) / scene / token / "labels.npz")
+            gt = to_voxel_grid(*drop_empty(*dense_to_sparse(data["semantics"].astype(int))))
+
+    return name, to_voxel_grid(*drop_empty(idx, cls)), gt
+
+
+def save_all(files, args, mapping):
+    out = Path(args.save_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(width=args.width, height=args.height, visible=False)
+    vis.get_render_option().background_color = np.array([1, 1, 1])
+    for f in files:
+        name, pred, gt = load_frame(f, args, mapping)
+        for tag, grid in (("pred", pred), ("gt", gt)):
+            if grid is None:
+                continue
+            vis.clear_geometries()
+            vis.add_geometry(grid)
+            vis.poll_events()
+            vis.update_renderer()
+            vis.capture_screen_image(str(out / f"{name}_{tag}.png"), do_render=True)
+        print("saved", name)
+    vis.destroy_window()
+
+
+def show(files, args, mapping):
+    state = {"i": -1, "gt": False, "frame": None}
+    vis = o3d.visualization.VisualizerWithKeyCallback()
+    vis.create_window(width=args.width, height=args.height)
+    vis.get_render_option().background_color = np.array([1, 1, 1])
+
+    def draw(first=False):
+        name, pred, gt = state["frame"]
+        grid = gt if (state["gt"] and gt is not None) else pred
+        cam = None if first else vis.get_view_control().convert_to_pinhole_camera_parameters()
+        vis.clear_geometries()
+        vis.add_geometry(grid, reset_bounding_box=first)
+        if cam is not None:
+            vis.get_view_control().convert_from_pinhole_camera_parameters(cam)
+        print(f"[{state['i'] + 1}/{len(files)}] {name} ({'GT' if grid is gt else 'pred'})")
+
+    def go(step):
+        def cb(_):
+            i = state["i"] + step
+            if 0 <= i < len(files):
+                first = state["i"] < 0
+                state["i"], state["frame"] = i, load_frame(files[i], args, mapping)
+                draw(first)
+            return False
+        return cb
+
+    def toggle_gt(_):
+        state["gt"] = not state["gt"]
+        draw()
+        return False
+
+    def save(_):
+        os.makedirs(args.save_dir or ".", exist_ok=True)
+        path = os.path.join(args.save_dir or ".", f"{state['frame'][0]}.png")
+        vis.capture_screen_image(path)
+        print("saved", path)
+        return False
+
+    vis.register_key_callback(ord("N"), go(+1))
+    vis.register_key_callback(ord("B"), go(-1))
+    vis.register_key_callback(ord("G"), toggle_gt)
+    vis.register_key_callback(ord("S"), save)
+    vis.register_key_callback(ord("Q"), lambda v: v.close() or False)
+    go(+1)(vis)
+    vis.run()
+    vis.destroy_window()
+
+
+def main():
+    ap = ArgumentParser(description="Visualize TT-Occ predictions")
+    ap.add_argument("pred", help=".pth file or folder of .pth files")
+    ap.add_argument("--data_path", help="extracted nuScenes folder (mapping.json, <scene>/ego, <scene>/lidar); enables lidar-frame view")
+    ap.add_argument("--gt_path", help="Occ3D gts folder; needs --data_path; adds GT view")
+    ap.add_argument("--save_dir", help="save PNGs here and do not open a window")
+    ap.add_argument("--width", type=int, default=1000)
+    ap.add_argument("--height", type=int, default=800)
+    args = ap.parse_args()
+
+    files = find_pred_files(args.pred)
+    mapping = json.load(open(Path(args.data_path) / "mapping.json")) if args.gt_path else None
+    if args.save_dir:
+        save_all(files, args, mapping)
+    else:
+        show(files, args, mapping)
+
+
+if __name__ == "__main__":
+    main()
