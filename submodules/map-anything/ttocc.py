@@ -390,6 +390,7 @@ def run_mapanything_depth_only(
     intrinsics,
     image_normalization_type="dinov2",
     memory_efficient_inference=False,
+    ignore_pose_inputs=False,
     use_amp=True,
     amp_dtype="bf16",
 ):
@@ -417,6 +418,7 @@ def run_mapanything_depth_only(
     predictions = model.infer(
         views,
         memory_efficient_inference=memory_efficient_inference,
+        ignore_pose_inputs=ignore_pose_inputs,
         use_amp=use_amp,
         amp_dtype=amp_dtype,
         apply_mask=False,

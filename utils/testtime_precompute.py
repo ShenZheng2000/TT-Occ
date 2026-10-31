@@ -282,6 +282,7 @@ class RexOmniRunner:
         self.categories = list(self._DEFAULT_CATEGORIES)
         self.use_inference_mode = use_inference_mode
         self.sam_box_batch = _env_flag("TTOCC_SAM_BOX_BATCH", default=False)
+        self.thing_instances_only = _env_flag("TTOCC_REX_THING_INSTANCES_ONLY", default=False)
         checkpoint_path = sam_checkpoint
         if not os.path.isabs(checkpoint_path):
             checkpoint_path = str(_repo_root() / checkpoint_path)
@@ -312,9 +313,11 @@ class RexOmniRunner:
                 mask = masks[mask_idx]
                 if category in self._mod.INDEX_MAPPING:
                     semantic[mask] = self._mod.INDEX_MAPPING[category]
-                instance_id = min(next_instance_id, 255)
-                instance[mask] = instance_id
-                next_instance_id += 1
+                # Stuff instances (road, grass, building, ...) make RAFT flag whole ground regions as dynamic.
+                if not self.thing_instances_only or 1 <= self._mod.INDEX_MAPPING.get(category, 0) <= 10:
+                    instance_id = min(next_instance_id, 255)
+                    instance[mask] = instance_id
+                    next_instance_id += 1
                 mask_idx += 1
         return semantic, instance
 
@@ -363,6 +366,8 @@ class MapAnythingRunner:
         self._scene_static = {}
         self._pose_cache = {}
         self.memory_efficient_inference = _env_flag("TTOCC_MAPANY_MEMORY_EFFICIENT", default=False)
+        # Pose inputs bias MapAnything depth ~15-20% short on nuScenes; 1 = depth from images + intrinsics only.
+        self.ignore_pose_inputs = _env_flag("TTOCC_MAPANY_IGNORE_POSES", default=False)
 
     def _scene_meta(self, scene_path):
         scene_name = os.path.basename(os.path.normpath(scene_path))
@@ -427,6 +432,7 @@ class MapAnythingRunner:
                 meta["intrinsics"],
                 self.model.encoder.data_norm_type,
                 memory_efficient_inference=self.memory_efficient_inference,
+                ignore_pose_inputs=self.ignore_pose_inputs,
                 use_amp=True,
                 amp_dtype=amp_dtype,
             )

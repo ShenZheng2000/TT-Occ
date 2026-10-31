@@ -206,8 +206,9 @@ class Scene:
                     self.gaussians.detach_dict,
                 )
             self.voxelization_time += time.time() - start_time
-            voxel_cls_from_gs[voxel_cls_from_gs == 1] = 0
-            voxel_cls_from_gs[voxel_cls_from_gs == 9] = 0
+            if not KEEP_BARRIER_TRAILER:
+                voxel_cls_from_gs[voxel_cls_from_gs == 1] = 0
+                voxel_cls_from_gs[voxel_cls_from_gs == 9] = 0
             if self.opt.eval_online and self.opt.eval_occ:
                 self.eval(timestep, voxel_indices_from_gs, voxel_cls_from_gs)
             occ_path = join(self.occ_path, f"{timestep:02d}.pth")

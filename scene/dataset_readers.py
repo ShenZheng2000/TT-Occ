@@ -26,6 +26,9 @@ import torch
 from scipy.spatial import cKDTree
 from custom_utils import unproject_to_world, project_to_pixel
 
+# Original code drops barrier (1) and trailer (9); the paper reports both (21.51, 4.37 on Occ3D).
+KEEP_BARRIER_TRAILER = os.environ.get("TTOCC_KEEP_BARRIER_TRAILER", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 def precomputed_scene_dir(scene_path, feature_root=""):
     if feature_root:
         return join(os.path.abspath(feature_root), os.path.basename(os.path.normpath(scene_path)))
@@ -408,8 +411,9 @@ def load_nuscenes(
         # visualize_point_clouds(xyz_world[point_instance_id>0], point_instance_id[point_instance_id>0], 'preprocessed instance point cloud')
         # visualize_point_clouds(xyz_world, point_sem.argmax(1), 'preprocessed semantic point cloud')
         ####################################
-        point_sem[:, 1] = 0
-        point_sem[:, 9] = 0
+        if not KEEP_BARRIER_TRAILER:
+            point_sem[:, 1] = 0
+            point_sem[:, 9] = 0
         point_sem = point_sem+1e-6
         point_sem /= point_sem.sum(1, keepdims=True)
 
@@ -551,8 +555,9 @@ def load_nuscenes(
         point_rgb = torch.from_numpy(point_rgb).float()
         point_sem = torch.from_numpy(point_sem).float()
         point_rgb = point_rgb / 255.0
-        point_sem[:, 1] = 0
-        point_sem[:, 9] = 0
+        if not KEEP_BARRIER_TRAILER:
+            point_sem[:, 1] = 0
+            point_sem[:, 9] = 0
         point_sem = point_sem+1e-6
         point_sem /= point_sem.sum(1, keepdims=True)
         point_cloud = {
