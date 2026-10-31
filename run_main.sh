@@ -1,8 +1,10 @@
-data_root=/scratch/shenzhen/Datasets/nuscenes_extracted_val
+# Paths come from configs/*.env (via run.sh).
+data_root=${DATA_ROOT:?set in config}
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-feature_root=/scratch/shenzhen/precomputed
-occ3d_path=/scratch/shenzhen/Datasets/Occ3D_nuscenes/gts/
-nucraft_path=/scratch/shenzhen/Datasets/nuCraft/occupancy@0.2/
+feature_root=${FEATURE_ROOT:?set in config}
+output_root=${OUTPUT_ROOT:?set by run.sh}
+occ3d_path=${OCC3D_PATH:?set in config}
+nucraft_path=${NUCRAFT_PATH:?set in config}
 scenes=(
     "scene-0003"
     # "scene-0012"
@@ -156,14 +158,14 @@ scenes=(
     # "scene-1073"
 )
 
+# Override scene list from env (used by run_parallel.sh)
+if [ -n "$SCENES" ]; then read -ra scenes <<< "$SCENES"; fi
+
 occ_setting=(
     "Occ3D"
     "nuCraft"
 )
-variant_ls=(
-    # "LIDAR"
-    "Camera"
-)
+variant_ls=("${VARIANT:?set in config}")  # Camera or LIDAR
 EVAL_OCC=${EVAL_OCC:-1}
 PRECOMPUTE_USE_DISK=${PRECOMPUTE_USE_DISK:-0}
 PRECOMPUTE_WRITE_DISK=${PRECOMPUTE_WRITE_DISK:-0}
@@ -208,7 +210,7 @@ do
     fi
     for setting in "${occ_setting[@]}"
     do
-        output_dir=results-$setting
+        output_dir=$output_root/results-$setting
         for scene in "${scenes[@]}"
         do
             data_path=$data_root/$scene

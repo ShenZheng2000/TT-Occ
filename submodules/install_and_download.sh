@@ -85,7 +85,10 @@ hf download IDEA-Research/Rex-Omni
 echo "Rex-Omni HF weights OK"
 
 echo "==> Optional speed-up (FlashAttention2 for Rex-Omni)"
-echo "    FLASH_ATTN_CUDA_ARCHS=\"89\" MAX_JOBS=4 pip install flash-attn==2.7.4.post1 --no-build-isolation"
+# echo "    FLASH_ATTN_CUDA_ARCHS=\"89\" MAX_JOBS=4 pip install flash-attn==2.7.4.post1 --no-build-isolation"
+# 86 = RTX 3090 / RTX A6000 (Ampere), 89 = RTX 6000 Ada
+# pip install ninja
+# FLASH_ATTN_CUDA_ARCHS="86;89" MAX_JOBS=32 pip install flash-attn==2.7.4.post1 --no-build-isolation --no-deps
 
 echo "==> Re-pin numpy/pillow (later installs upgrade them)"
 pip install "numpy==1.26.4" "pillow==10.4.0"
